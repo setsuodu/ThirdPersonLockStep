@@ -12,7 +12,7 @@
 - Unity Package Manager → Add package from git URL：`https://github.com/RevenantX/LiteNetLib.git`
 - 或从 [LiteNetLib Releases](https://github.com/RevenantX/LiteNetLib/releases) 下载编译好的 dll，放进 `Assets/Plugins`
 
-（不确定你说的"LiteNetLib2"具体指哪个版本/分支，如果和这里默认版本 API 对不上，主要留意 `NetDataWriter/NetDataReader` 的 `sbyte` 读写方法名是否是 `Put(sbyte)` / `GetSByte()`，不同版本可能略有差异，改一下方法名即可，其余架构不受影响。）
+（不确定你说的"LiteNetLib2"具体指哪个版本/分支，代码已按你反馈的实际 API 调整过：广播统一用 `netManager.SendToAll(writer, deliveryMethod)`，排除某个 peer 时用重载 `SendToAll(writer, deliveryMethod, excludePeer)`，没有再用 `ConnectedPeerList` 手动 foreach。如果你那个版本里 `sbyte` 的读写方法名跟 `Put(sbyte)` / `GetSByte()` 对不上，改一下方法名即可，其余架构不受影响。）
 
 ## 2. 把脚本导入项目
 
@@ -42,9 +42,15 @@ Unity 单个 Editor 进程一次只能跑一份场景，测多实例需要：
    ```
    的日志。**对比两个实例在同一个 Tick 号下打印出的 Hash 和每个 Player 的坐标，必须完全一致**。只要出现同一 tick 号 Hash 不一样，就说明确定性被破坏了（要去查是不是哪里手滑用了 float、或者字典遍历顺序没锁死之类的问题）。
 
+## 关于"追帧"（第二个玩家进来能不能接上）
+
+**能接上了**——`JoinAccept` 消息里带的不只是已有玩家的 ID 列表，还带了他们"此刻的坐标快照"（`world.Positions[id].X.Raw / Y.Raw`）。新客户端收到后用这份快照初始化 `LogicWorld`，而不是把所有已有玩家摆在 (0,0)，这样一进场看到的就是别人真实所在的位置，后续 tick 再按正常的 InputFrame 广播继续推进，两边保持一致。
+
+这本质上就是最早聊的"周期性快照"思路的一个最小实现——只不过这里的快照只在"有新客户端连接"这个事件触发时才生成一份，发给这一个新客户端，而不是像原始设想那样"每1024帧固定存一份，所有人共享"。如果要支持已经打了很久的对局中途断线重连（而不仅仅是首次加入），这套机制直接就能复用：把 `OnPeerConnected` 里生成快照的逻辑原样搬过去即可，因为它本来就是"查询服务器/host此刻的世界状态"，不区分"新玩家"还是"断线重连的老玩家"。
+
 ## 已知的简化 / 没做的部分（如果要往生产级做，这些是下一步）
 
 - **没做输入延迟缓冲（input delay buffer）**：本地网络延迟极低，服务器收齐即广播，没有刻意插入 N 帧缓冲去掩盖真实网络延迟。真上线需要加。
-- **没做真正的重连/快照恢复**：这个 demo 只处理"正常加入"，断线重连、以及你之前提到的"每 1024 帧存快照"都还没实现，是自然的下一步扩展点。
+- **重连流程没有完整走通**：快照机制本身已经有了（见上一节），但客户端主动断线重连（重新 `OnClickJoin`）时如何恢复 `myPlayerId`、如何让服务器识别"这是老玩家回来了"而不是全新玩家，这部分身份识别逻辑还没做，目前每次连接都会分配一个全新的 `playerId`。
 - **没做仇恨/技能这类离散事件的独立高优先级通道**：目前只有位置这一种连续状态，事件通道的设计留给你按需扩展。
 - **没有相机相关系统（LogicCamera）**：目前是直接用世界坐标系下的 WASD 方向移动，不涉及"镜头朝向影响移动方向"的解析，这是刻意简化，方便你先验证最基础的确定性链路，跑通以后再叠加 LogicCamera 这层。

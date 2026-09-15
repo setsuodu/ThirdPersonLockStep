@@ -19,10 +19,10 @@ namespace FrameSyncDemo
 
         public readonly Dictionary<int, FpVec2> Positions = new Dictionary<int, FpVec2>();
 
-        public void AddPlayer(int playerId)
+        public void AddPlayer(int playerId, FpVec2? initialPosition = null)
         {
             if (!Positions.ContainsKey(playerId))
-                Positions[playerId] = FpVec2.Zero;
+                Positions[playerId] = initialPosition ?? FpVec2.Zero;
         }
 
         public void RemovePlayer(int playerId)

@@ -178,9 +178,7 @@ namespace FrameSyncDemo
         {
             var writer = new NetDataWriter();
             writer.WriteInputFrame(tick, entries);
-            //foreach (var peer in netManager.ConnectedPeerList)
-            //    peer.Send(writer, DeliveryMethod.ReliableOrdered);
-            netManager.SendToAll(writer, 0, DeliveryMethod.ReliableOrdered);
+            netManager.SendToAll(writer, DeliveryMethod.ReliableOrdered);
 
             // host 自己不会给自己发 socket 包，直接本地应用。
             ApplyInputFrame(tick, entries);
@@ -234,7 +232,11 @@ namespace FrameSyncDemo
             peersByPlayerId[newPlayerId] = peer;
             playerIdByPeer[peer] = newPlayerId;
 
-            var existing = activePlayerIds.ToArray();
+            // 关键：不只是ID列表，要把已有玩家"此刻的坐标"一起发过去，
+            // 这样新客户端才能接上现有状态，而不是把所有已有玩家初始化到(0,0)。
+            var existingSnapshot = activePlayerIds
+                .Select(id => (id, world.Positions[id].X.Raw, world.Positions[id].Y.Raw))
+                .ToList();
 
             // 简化处理：新玩家从"当前正在收集的 tick"开始参与要求，
             // 不需要补交之前已经 flush 掉的历史 tick 的输入。
@@ -243,14 +245,12 @@ namespace FrameSyncDemo
             SpawnPlayerView(newPlayerId);
 
             var accept = new NetDataWriter();
-            accept.WriteJoinAccept(newPlayerId, nextTickToCollect, existing);
+            accept.WriteJoinAccept(newPlayerId, nextTickToCollect, existingSnapshot);
             peer.Send(accept, DeliveryMethod.ReliableOrdered);
 
             var joined = new NetDataWriter();
             joined.WritePlayerJoined(newPlayerId);
-            //foreach (var p in netManager.ConnectedPeerList)
-            //    if (p != peer) p.Send(joined, DeliveryMethod.ReliableOrdered);
-            netManager.SendToAll(joined, 0, DeliveryMethod.ReliableOrdered);
+            netManager.SendToAll(joined, DeliveryMethod.ReliableOrdered, peer);
 
             SetStatus($"Player {newPlayerId} joined ({activePlayerIds.Count} total)");
         }
@@ -266,9 +266,7 @@ namespace FrameSyncDemo
 
                 var left = new NetDataWriter();
                 left.WritePlayerLeft(pid);
-                //foreach (var p in netManager.ConnectedPeerList)
-                //    p.Send(left, DeliveryMethod.ReliableOrdered);
-                netManager.SendToAll(left, 0, DeliveryMethod.ReliableOrdered);
+                netManager.SendToAll(left, DeliveryMethod.ReliableOrdered);
 
                 SetStatus($"Player {pid} left");
             }
@@ -287,7 +285,10 @@ namespace FrameSyncDemo
                     for (int i = 0; i < count; i++)
                     {
                         int pid = reader.GetInt();
-                        world.AddPlayer(pid);
+                        long x = reader.GetLong();
+                        long y = reader.GetLong();
+                        // 用快照坐标初始化，而不是默认的 (0,0) —— 这就是"接上现有状态"的关键一步。
+                        world.AddPlayer(pid, new FpVec2(Fp.FromRaw(x), Fp.FromRaw(y)));
                         SpawnPlayerView(pid);
                     }
                     world.AddPlayer(myPlayerId);

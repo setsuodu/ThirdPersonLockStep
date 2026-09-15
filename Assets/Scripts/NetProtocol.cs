@@ -14,13 +14,20 @@ namespace FrameSyncDemo
 
     public static class NetWriteExtensions
     {
-        public static void WriteJoinAccept(this NetDataWriter w, int yourPlayerId, int startTick, int[] existingPlayerIds)
+        // existingPlayers 携带的是"当前状态快照"（每个已有玩家在 startTick 时刻的坐标），
+        // 不只是玩家ID列表——否则新客户端会把已有玩家初始化到 (0,0)，跟真实位置对不上。
+        public static void WriteJoinAccept(this NetDataWriter w, int yourPlayerId, int startTick, List<(int playerId, long x, long y)> existingPlayers)
         {
             w.Put((byte)NetMsgType.JoinAccept);
             w.Put(yourPlayerId);
             w.Put(startTick);
-            w.Put(existingPlayerIds.Length);
-            foreach (var id in existingPlayerIds) w.Put(id);
+            w.Put(existingPlayers.Count);
+            foreach (var p in existingPlayers)
+            {
+                w.Put(p.playerId);
+                w.Put(p.x);
+                w.Put(p.y);
+            }
         }
 
         public static void WritePlayerJoined(this NetDataWriter w, int playerId)
