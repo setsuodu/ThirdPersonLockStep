@@ -18,10 +18,10 @@ namespace FrameSyncDemo
     public class GameNetwork : MonoBehaviour, INetEventListener
     {
         [Header("UI（在 Inspector 里把场景里的按钮/输入框拖进来）")]
-        public GameObject connectPanel;
         public InputField ipInputField;
         public InputField portInputField;
         public Text statusText;
+        public GameObject connectionPanel;
 
         [Header("Simulation")]
         public GameObject playerViewPrefab; // 留空则用默认 Cube
@@ -44,6 +44,7 @@ namespace FrameSyncDemo
         private int localSimTick = 0;
         private readonly Dictionary<int, List<(int playerId, sbyte dx, sbyte dy)>> receivedFrames = new Dictionary<int, List<(int, sbyte, sbyte)>>();
         private readonly Dictionary<int, PlayerView> playerViews = new Dictionary<int, PlayerView>();
+        private readonly Dictionary<int, Color32> playerColors = new Dictionary<int, Color32>();
 
         // ---- 服务器侧状态（只有 isServer==true 时才会被用到）----
         private readonly Dictionary<int, NetPeer> peersByPlayerId = new Dictionary<int, NetPeer>();
@@ -97,10 +98,11 @@ namespace FrameSyncDemo
 
             myPlayerId = nextPlayerId++;
             activePlayerIds.Add(myPlayerId);
+            playerColors[myPlayerId] = GetPlayerColor(myPlayerId);
             world.AddPlayer(myPlayerId);
             SpawnPlayerView(myPlayerId);
             SetStatus($"Hosting on port {port} as Player {myPlayerId}");
-            connectPanel.SetActive(false);
+            CloseConnectionPanel();
         }
 
         public void OnClickJoin()
@@ -130,11 +132,8 @@ namespace FrameSyncDemo
 
         private void SampleAndSendInput()
         {
-            // 输入最终只允许进入确定性逻辑层的 -1 / 0 / 1。
-            // 不要使用 Mathf.Sign()：手柄/摇杆极小漂移（例如 0.01）也会被放大成 1，
-            // 导致 Host/Player 在没有按键时仍然持续移动。
-            sbyte dx = ReadAxisInput("Horizontal");
-            sbyte dy = ReadAxisInput("Vertical");
+            sbyte dx = AxisToInput(Input.GetAxisRaw("Horizontal"));
+            sbyte dy = AxisToInput(Input.GetAxisRaw("Vertical"));
 
             int tick = myNextInputTick++;
 
@@ -151,17 +150,35 @@ namespace FrameSyncDemo
             }
         }
 
-        private static sbyte ReadAxisInput(string axisName)
-        {
-            float value = Input.GetAxisRaw(axisName);
+        // ============ 服务器侧聚合 ============
 
-            // 明确死区，避免手柄/摇杆漂移被当成移动输入。
+        private static sbyte AxisToInput(float value)
+        {
             if (value > 0.5f) return 1;
             if (value < -0.5f) return -1;
             return 0;
         }
 
-        // ============ 服务器侧聚合 ============
+        private static Color32 GetPlayerColor(int playerId)
+        {
+            // 颜色由服务器按 playerId 决定，所有客户端收到同一份 RGBA。
+            // 这里只用于表现层，不进入确定性模拟。
+            switch (playerId % 6)
+            {
+                case 0: return new Color32(60, 170, 255, 255);
+                case 1: return new Color32(255, 90, 90, 255);
+                case 2: return new Color32(90, 220, 120, 255);
+                case 3: return new Color32(255, 190, 60, 255);
+                case 4: return new Color32(190, 100, 255, 255);
+                default: return new Color32(60, 230, 210, 255);
+            }
+        }
+
+        private void CloseConnectionPanel()
+        {
+            if (connectionPanel != null)
+                connectionPanel.SetActive(false);
+        }
 
         private void ServerReceiveInput(int playerId, int tick, sbyte dx, sbyte dy)
         {
@@ -224,11 +241,20 @@ namespace FrameSyncDemo
         private void SpawnPlayerView(int playerId)
         {
             if (playerViews.ContainsKey(playerId)) return;
-            var go = playerViewPrefab != null ? Instantiate(playerViewPrefab) : GameObject.CreatePrimitive(PrimitiveType.Cube);
-            go.name = $"Player_{playerId}";
+
+            GameObject go;
+            if (playerViewPrefab != null)
+                go = Instantiate(playerViewPrefab);
+            else
+                go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+
             var view = go.GetComponent<PlayerView>();
             if (view == null) view = go.AddComponent<PlayerView>();
             playerViews[playerId] = view;
+
+            if (!playerColors.TryGetValue(playerId, out var color))
+                color = GetPlayerColor(playerId);
+            view.SetColor(color);
         }
 
         // ============ LiteNetLib 回调 ============
@@ -250,12 +276,13 @@ namespace FrameSyncDemo
             // 关键：不只是ID列表，要把已有玩家"此刻的坐标"一起发过去，
             // 这样新客户端才能接上现有状态，而不是把所有已有玩家初始化到(0,0)。
             var existingSnapshot = activePlayerIds
-                .Select(id => (id, world.Positions[id].X.Raw, world.Positions[id].Y.Raw))
+                .Select(id => (id, world.Positions[id].X.Raw, world.Positions[id].Y.Raw, playerColors[id]))
                 .ToList();
 
             // 简化处理：新玩家从"当前正在收集的 tick"开始参与要求，
             // 不需要补交之前已经 flush 掉的历史 tick 的输入。
             activePlayerIds.Add(newPlayerId);
+            playerColors[newPlayerId] = GetPlayerColor(newPlayerId);
             world.AddPlayer(newPlayerId);
             SpawnPlayerView(newPlayerId);
 
@@ -264,7 +291,7 @@ namespace FrameSyncDemo
             peer.Send(accept, DeliveryMethod.ReliableOrdered);
 
             var joined = new NetDataWriter();
-            joined.WritePlayerJoined(newPlayerId);
+            joined.WritePlayerJoined(newPlayerId, playerColors[newPlayerId]);
             netManager.SendToAll(joined, DeliveryMethod.ReliableOrdered, peer);
 
             SetStatus($"Player {newPlayerId} joined ({activePlayerIds.Count} total)");
@@ -277,6 +304,7 @@ namespace FrameSyncDemo
                 activePlayerIds.Remove(pid);
                 peersByPlayerId.Remove(pid);
                 playerIdByPeer.Remove(peer);
+                playerColors.Remove(pid);
                 TryFlushTicks(); // 少了一个人可能正好能把卡住的 tick 放行
 
                 var left = new NetDataWriter();
@@ -302,29 +330,35 @@ namespace FrameSyncDemo
                         int pid = reader.GetInt();
                         long x = reader.GetLong();
                         long y = reader.GetLong();
-                        // 用快照坐标初始化，而不是默认的 (0,0) —— 这就是"接上现有状态"的关键一步。
+                        var color = new Color32(reader.GetByte(), reader.GetByte(), reader.GetByte(), reader.GetByte());
+                        playerColors[pid] = color;
+                        // 用快照坐标初始化，而不是默认的 (0,0)。
                         world.AddPlayer(pid, new FpVec2(Fp.FromRaw(x), Fp.FromRaw(y)));
                         SpawnPlayerView(pid);
                     }
+                    playerColors[myPlayerId] = GetPlayerColor(myPlayerId);
                     world.AddPlayer(myPlayerId);
                     SpawnPlayerView(myPlayerId);
                     myNextInputTick = startTick;
                     localSimTick = startTick;
                     SetStatus($"Joined as Player {myPlayerId} at tick {startTick}");
+                    CloseConnectionPanel();
                     break;
                 }
                 case NetMsgType.PlayerJoined:
                 {
                     int pid = reader.GetInt();
+                    var color = new Color32(reader.GetByte(), reader.GetByte(), reader.GetByte(), reader.GetByte());
+                    playerColors[pid] = color;
                     world.AddPlayer(pid);
                     SpawnPlayerView(pid);
-                    connectPanel.SetActive(false);
                     break;
                 }
                 case NetMsgType.PlayerLeft:
                 {
                     int pid = reader.GetInt();
                     world.RemovePlayer(pid);
+                    playerColors.Remove(pid);
                     if (playerViews.TryGetValue(pid, out var v))
                     {
                         Destroy(v.gameObject);

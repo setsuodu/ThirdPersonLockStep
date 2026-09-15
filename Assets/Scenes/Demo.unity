@@ -799,10 +799,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4cf05fab5011f4f4b8b15cf9288f0e62, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FrameSyncDemo.GameNetwork
-  connectPanel: {fileID: 808365657}
   ipInputField: {fileID: 1950133989}
   portInputField: {fileID: 237695875}
   statusText: {fileID: 531828644}
+  connectionPanel: {fileID: 808365657}
   playerViewPrefab: {fileID: 5829920296457334754, guid: 42d0020280659694e8324bd06cffdbaa, type: 3}
   tickRate: 20
 --- !u!4 &764019927
