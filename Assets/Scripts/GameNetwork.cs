@@ -18,6 +18,7 @@ namespace FrameSyncDemo
     public class GameNetwork : MonoBehaviour, INetEventListener
     {
         [Header("UI（在 Inspector 里把场景里的按钮/输入框拖进来）")]
+        public GameObject connectPanel;
         public InputField ipInputField;
         public InputField portInputField;
         public Text statusText;
@@ -99,6 +100,7 @@ namespace FrameSyncDemo
             world.AddPlayer(myPlayerId);
             SpawnPlayerView(myPlayerId);
             SetStatus($"Hosting on port {port} as Player {myPlayerId}");
+            connectPanel.SetActive(false);
         }
 
         public void OnClickJoin()
@@ -128,8 +130,11 @@ namespace FrameSyncDemo
 
         private void SampleAndSendInput()
         {
-            sbyte dx = (sbyte)Mathf.RoundToInt(Mathf.Sign(Input.GetAxisRaw("Horizontal")));
-            sbyte dy = (sbyte)Mathf.RoundToInt(Mathf.Sign(Input.GetAxisRaw("Vertical")));
+            // 输入最终只允许进入确定性逻辑层的 -1 / 0 / 1。
+            // 不要使用 Mathf.Sign()：手柄/摇杆极小漂移（例如 0.01）也会被放大成 1，
+            // 导致 Host/Player 在没有按键时仍然持续移动。
+            sbyte dx = ReadAxisInput("Horizontal");
+            sbyte dy = ReadAxisInput("Vertical");
 
             int tick = myNextInputTick++;
 
@@ -144,6 +149,16 @@ namespace FrameSyncDemo
                 writer.WritePlayerInput(tick, dx, dy);
                 netManager.FirstPeer?.Send(writer, DeliveryMethod.ReliableOrdered);
             }
+        }
+
+        private static sbyte ReadAxisInput(string axisName)
+        {
+            float value = Input.GetAxisRaw(axisName);
+
+            // 明确死区，避免手柄/摇杆漂移被当成移动输入。
+            if (value > 0.5f) return 1;
+            if (value < -0.5f) return -1;
+            return 0;
         }
 
         // ============ 服务器侧聚合 ============
@@ -303,6 +318,7 @@ namespace FrameSyncDemo
                     int pid = reader.GetInt();
                     world.AddPlayer(pid);
                     SpawnPlayerView(pid);
+                    connectPanel.SetActive(false);
                     break;
                 }
                 case NetMsgType.PlayerLeft:
