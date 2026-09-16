@@ -15,7 +15,7 @@ namespace FrameSyncDemo
 
     public static class NetWriteExtensions
     {
-        public static void WriteJoinAccept(this NetDataWriter w, int yourPlayerId, int startTick, List<(int playerId, long x, long y, Color32 color)> existingPlayers)
+        public static void WriteJoinAccept(this NetDataWriter w, int yourPlayerId, int startTick, List<(int playerId, long x, long y, byte facing, Color32 color)> existingPlayers)
         {
             w.Put((byte)NetMsgType.JoinAccept);
             w.Put(yourPlayerId);
@@ -26,6 +26,7 @@ namespace FrameSyncDemo
                 w.Put(p.playerId);
                 w.Put(p.x);
                 w.Put(p.y);
+                w.Put(p.facing);
                 w.Put(p.color.r);
                 w.Put(p.color.g);
                 w.Put(p.color.b);
@@ -49,15 +50,17 @@ namespace FrameSyncDemo
             w.Put(playerId);
         }
 
-        public static void WritePlayerInput(this NetDataWriter w, int tick, sbyte dx, sbyte dy)
+        // angle: FpTrig 的 0~255 角度索引（相机相对方向解析、量化之后的结果）。
+        // moving: 是否有有效输入；没有输入时 angle 不重要，Step() 里会忽略它。
+        public static void WritePlayerInput(this NetDataWriter w, int tick, byte angle, bool moving)
         {
             w.Put((byte)NetMsgType.PlayerInput);
             w.Put(tick);
-            w.Put(dx);
-            w.Put(dy);
+            w.Put(angle);
+            w.Put(moving);
         }
 
-        public static void WriteInputFrame(this NetDataWriter w, int tick, List<(int playerId, sbyte dx, sbyte dy)> entries)
+        public static void WriteInputFrame(this NetDataWriter w, int tick, List<(int playerId, byte angle, bool moving)> entries)
         {
             w.Put((byte)NetMsgType.InputFrame);
             w.Put(tick);
@@ -65,8 +68,8 @@ namespace FrameSyncDemo
             foreach (var e in entries)
             {
                 w.Put(e.playerId);
-                w.Put(e.dx);
-                w.Put(e.dy);
+                w.Put(e.angle);
+                w.Put(e.moving);
             }
         }
     }

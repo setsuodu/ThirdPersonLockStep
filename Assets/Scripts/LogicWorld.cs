@@ -10,54 +10,56 @@ namespace FrameSyncDemo
     /// </summary>
     public class LogicWorld
     {
-        // 每 tick 移动速度，纯定点常量，不用运行时算出来的浮点值。
-        public static readonly Fp MoveSpeedPerTick = Fp.FromRaw(3277); // ≈0.05 units/tick
-
-        // 1/sqrt(2) 的 Q16.16 定点近似，编译期写死的常量，不在运行时调用 Math.Sqrt，
-        // 避免不同平台 sqrt 实现末位不一致带来的跨端分歧。
-        private static readonly Fp DiagFactor = Fp.FromRaw(46341);
+        // 每 tick 移动速度。默认值≈0.05 units/tick；GameNetwork.Awake() 会用
+        // Fp.FromFloatDebugOnly() 按 Inspector 里配置的"units/秒"重新换算并覆盖这个值——
+        // 这属于允许的一次性配置转换，不是运行时逐帧的浮点运算，跟 Fp.cs 里的约定一致。
+        // 注意：这个值必须在所有客户端上配置成一样的，它本质上也是"同步契约"的一部分。
+        public Fp MoveSpeedPerTick = Fp.FromRaw(3277);
 
         public readonly Dictionary<int, FpVec2> Positions = new Dictionary<int, FpVec2>();
+
+        // 朝向也是同步状态的一部分——不能只在表现层本地转，否则各客户端看到
+        // 同一个角色的朝向会对不上。只在"确实在移动"的tick才更新，停下来后
+        // 保留最后一次移动方向（标准TPS行为），默认朝向 angleIndex=0。
+        public readonly Dictionary<int, byte> Facings = new Dictionary<int, byte>();
 
         public void AddPlayer(int playerId, FpVec2? initialPosition = null)
         {
             if (!Positions.ContainsKey(playerId))
+            {
                 Positions[playerId] = initialPosition ?? FpVec2.Zero;
+                Facings[playerId] = 0;
+            }
         }
 
         public void RemovePlayer(int playerId)
         {
             Positions.Remove(playerId);
+            Facings.Remove(playerId);
         }
 
         /// <summary>
-        /// 推进一个逻辑帧。inputsByPlayer 里没有的玩家视为本帧无输入（dx=dy=0）。
+        /// 推进一个逻辑帧。inputsByPlayer 里没有的玩家，或 moving=false 的玩家，本帧不移动。
         /// 遍历顺序固定按 playerId 排序，避免字典遍历顺序在不同 runtime 下不确定。
+        /// 方向通过 FpTrig 查表得到，天然是归一化的单位向量，不需要再对角线特判。
         /// </summary>
-        public void Step(Dictionary<int, (sbyte dx, sbyte dy)> inputsByPlayer)
+        public void Step(Dictionary<int, (byte angle, bool moving)> inputsByPlayer)
         {
             foreach (var playerId in Positions.Keys.OrderBy(id => id).ToList())
             {
-                if (!inputsByPlayer.TryGetValue(playerId, out var input))
-                    input = (0, 0);
+                if (!inputsByPlayer.TryGetValue(playerId, out var input) || !input.moving)
+                    continue;
 
-                Fp dx = Fp.FromInt(input.dx);
-                Fp dy = Fp.FromInt(input.dy);
-
-                if (input.dx != 0 && input.dy != 0)
-                {
-                    // 斜向移动用预烘焙常量归一化，不做运行时开方。
-                    dx = dx * DiagFactor;
-                    dy = dy * DiagFactor;
-                }
-
-                var delta = new FpVec2(dx, dy) * MoveSpeedPerTick;
+                var dir = FpTrig.DirFromAngle(input.angle);
+                var delta = dir * MoveSpeedPerTick;
                 Positions[playerId] = Positions[playerId] + delta;
+                Facings[playerId] = input.angle;
             }
         }
 
         /// <summary>
         /// 整个世界状态的简单哈希，用来快速比对不同客户端在同一 tick 上是否算出了完全相同的结果。
+        /// 朝向也纳入哈希——这样"朝向是否也保持一致"同样能被这一个数字验证到，不用额外肉眼比对。
         /// 如果两端在同一 tick 打印出的 Hash 不一致，说明确定性被破坏了。
         /// </summary>
         public long ComputeStateHash()
@@ -69,6 +71,7 @@ namespace FrameSyncDemo
                 hash = hash * 31 + playerId;
                 hash = hash * 31 + p.X.Raw;
                 hash = hash * 31 + p.Y.Raw;
+                hash = hash * 31 + Facings[playerId];
             }
             return hash;
         }

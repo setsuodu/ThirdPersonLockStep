@@ -373,6 +373,7 @@ GameObject:
   - component: {fileID: 337774001}
   - component: {fileID: 337774000}
   - component: {fileID: 337773999}
+  - component: {fileID: 337774002}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -454,6 +455,24 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &337774002
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 337773998}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e9b2de2631f357e44a0739b9d47af9ae, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FrameSyncDemo.ThirdPersonCameraRig
+  target: {fileID: 0}
+  logicCamera: {fileID: 440709366}
+  distance: 6
+  height: 3
+  followSmooth: 12
+  rotateSmooth: 12
 --- !u!1 &352808340
 GameObject:
   m_ObjectHideFlags: 0
@@ -601,6 +620,54 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &440709364
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 440709365}
+  - component: {fileID: 440709366}
+  m_Layer: 0
+  m_Name: Logic Camera
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &440709365
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 440709364}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &440709366
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 440709364}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4d97aabd0ecda4042b22d281acb7a82d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FrameSyncDemo.LogicCamera
+  mouseSensitivity: 3
+  pitchSensitivity: 2
+  minPitchDegrees: -35
+  maxPitchDegrees: 70
 --- !u!1 &531828642
 GameObject:
   m_ObjectHideFlags: 0
@@ -805,6 +872,9 @@ MonoBehaviour:
   connectionPanel: {fileID: 808365657}
   playerViewPrefab: {fileID: 5829920296457334754, guid: 42d0020280659694e8324bd06cffdbaa, type: 3}
   tickRate: 20
+  moveSpeedUnitsPerSecond: 3
+  localLogicCamera: {fileID: 440709366}
+  cameraRig: {fileID: 337774002}
 --- !u!4 &764019927
 Transform:
   m_ObjectHideFlags: 0
@@ -1774,6 +1844,7 @@ SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 337774001}
+  - {fileID: 440709365}
   - {fileID: 45926661}
   - {fileID: 1937997778}
   - {fileID: 403547944}

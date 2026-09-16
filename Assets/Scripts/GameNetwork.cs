@@ -26,6 +26,14 @@ namespace FrameSyncDemo
         [Header("Simulation")]
         public GameObject playerViewPrefab; // 留空则用默认 Cube
         public int tickRate = 20;
+        [Tooltip("每秒移动多少 units，换算成 Fp 后写进 LogicWorld.MoveSpeedPerTick。所有客户端必须填一样的值。")]
+        public float moveSpeedUnitsPerSecond = 3f;
+
+        [Header("Camera（Input → LogicCamera → EngineCamera）")]
+        [Tooltip("场景里的 LogicCamera 组件：只负责把鼠标转成本地 yaw，读它来解析移动方向")]
+        public LogicCamera localLogicCamera;
+        [Tooltip("场景里挂在 Main Camera 上的表现层跟随脚本，只做视觉平滑，不影响逻辑")]
+        public ThirdPersonCameraRig cameraRig;
 
         private float tickInterval;
         private float tickAccumulator;
@@ -42,7 +50,7 @@ namespace FrameSyncDemo
         private int myNextInputTick = 0;
         private readonly LogicWorld world = new LogicWorld();
         private int localSimTick = 0;
-        private readonly Dictionary<int, List<(int playerId, sbyte dx, sbyte dy)>> receivedFrames = new Dictionary<int, List<(int, sbyte, sbyte)>>();
+        private readonly Dictionary<int, List<(int playerId, byte angle, bool moving)>> receivedFrames = new Dictionary<int, List<(int, byte, bool)>>();
         private readonly Dictionary<int, PlayerView> playerViews = new Dictionary<int, PlayerView>();
         private readonly Dictionary<int, Color32> playerColors = new Dictionary<int, Color32>();
 
@@ -50,7 +58,7 @@ namespace FrameSyncDemo
         private readonly Dictionary<int, NetPeer> peersByPlayerId = new Dictionary<int, NetPeer>();
         private readonly Dictionary<NetPeer, int> playerIdByPeer = new Dictionary<NetPeer, int>();
         private readonly HashSet<int> activePlayerIds = new HashSet<int>();
-        private readonly Dictionary<int, Dictionary<int, (sbyte dx, sbyte dy)>> pendingByTick = new Dictionary<int, Dictionary<int, (sbyte, sbyte)>>();
+        private readonly Dictionary<int, Dictionary<int, (byte angle, bool moving)>> pendingByTick = new Dictionary<int, Dictionary<int, (byte, bool)>>();
         private int nextTickToCollect = 0;
         private int nextPlayerId = 0;
 
@@ -58,11 +66,19 @@ namespace FrameSyncDemo
         {
             tickInterval = 1f / tickRate;
             netManager = new NetManager(this) { AutoRecycle = true };
+
+            // 一次性配置转换：units/秒 → 每tick的Fp增量。这是允许的 FromFloatDebugOnly
+            // 用法（读配置，不是逐帧运行时换算），但要确保所有客户端这个数填的一样，
+            // 否则大家的"同一份输入"会推导出不同的移动距离，直接破坏确定性。
+            world.MoveSpeedPerTick = Fp.FromFloatDebugOnly(moveSpeedUnitsPerSecond / tickRate);
         }
 
         void Update()
         {
             netManager?.PollEvents();
+
+            if (Input.GetKeyDown(KeyCode.Escape))
+                localLogicCamera?.SetCursorLocked(false);
 
             if (isClient)
             {
@@ -74,11 +90,13 @@ namespace FrameSyncDemo
                 }
             }
 
-            // 表现层：把逻辑位置（定点）转成 float 显示，单向流动，不回写。
+            // 表现层：把逻辑位置+朝向（定点/量化整数）转成 float 显示，单向流动，不回写。
             foreach (var kv in playerViews)
             {
                 var pos = world.Positions.TryGetValue(kv.Key, out var p) ? p : FpVec2.Zero;
+                var facing = world.Facings.TryGetValue(kv.Key, out var f) ? f : (byte)0;
                 kv.Value.SetLogicPosition(pos);
+                kv.Value.SetLogicFacing(facing);
             }
         }
 
@@ -103,6 +121,7 @@ namespace FrameSyncDemo
             SpawnPlayerView(myPlayerId);
             SetStatus($"Hosting on port {port} as Player {myPlayerId}");
             CloseConnectionPanel();
+            localLogicCamera?.SetCursorLocked(true);
         }
 
         public void OnClickJoin()
@@ -132,32 +151,41 @@ namespace FrameSyncDemo
 
         private void SampleAndSendInput()
         {
-            sbyte dx = AxisToInput(Input.GetAxisRaw("Horizontal"));
-            sbyte dy = AxisToInput(Input.GetAxisRaw("Vertical"));
+            // 注意：这里直接用 sqrMagnitude 判断"有没有输入"，不走 Mathf.Sign 那条路——
+            // 之前那个bug就是 Mathf.Sign(0) 在 Unity 里返回 1 而不是 0 造成的。
+            Vector2 raw = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+            bool moving = raw.sqrMagnitude > 0.0001f;
+            byte angleIndex = 0;
+
+            if (moving)
+            {
+                raw.Normalize();
+                // Input → LogicCamera → 这里：读取本地相机的 yaw（float，纯本地，不需要跨端一致），
+                // 把 WASD 的"相对方向"转成"世界方向"。这一步用 float 完全没问题，因为它发生在
+                // "进入同步域"之前——真正被广播、被所有端一致处理的，是下面量化出来的 angleIndex。
+                float camYaw = localLogicCamera != null ? localLogicCamera.YawRadians : 0f;
+                // atan2(x, y) 以 (0,1) 为 0 弧度基准，和 FpTrig.DirFromAngle / ThirdPersonCameraRig
+                // 里"yaw=0朝+Z"的约定保持一致。
+                float worldAngle = Mathf.Atan2(raw.x, raw.y) + camYaw;
+                angleIndex = FpTrig.QuantizeAngle(worldAngle);
+            }
 
             int tick = myNextInputTick++;
 
             if (isServer)
             {
                 // host 同时是自己的客户端：不走真实 socket，直接喂给服务器聚合逻辑。
-                ServerReceiveInput(myPlayerId, tick, dx, dy);
+                ServerReceiveInput(myPlayerId, tick, angleIndex, moving);
             }
             else
             {
                 var writer = new NetDataWriter();
-                writer.WritePlayerInput(tick, dx, dy);
+                writer.WritePlayerInput(tick, angleIndex, moving);
                 netManager.FirstPeer?.Send(writer, DeliveryMethod.ReliableOrdered);
             }
         }
 
         // ============ 服务器侧聚合 ============
-
-        private static sbyte AxisToInput(float value)
-        {
-            if (value > 0.5f) return 1;
-            if (value < -0.5f) return -1;
-            return 0;
-        }
 
         private static Color32 GetPlayerColor(int playerId)
         {
@@ -180,14 +208,14 @@ namespace FrameSyncDemo
                 connectionPanel.SetActive(false);
         }
 
-        private void ServerReceiveInput(int playerId, int tick, sbyte dx, sbyte dy)
+        private void ServerReceiveInput(int playerId, int tick, byte angle, bool moving)
         {
             if (!pendingByTick.TryGetValue(tick, out var dict))
             {
-                dict = new Dictionary<int, (sbyte, sbyte)>();
+                dict = new Dictionary<int, (byte, bool)>();
                 pendingByTick[tick] = dict;
             }
-            dict[playerId] = (dx, dy);
+            dict[playerId] = (angle, moving);
 
             TryFlushTicks();
         }
@@ -206,7 +234,7 @@ namespace FrameSyncDemo
             }
         }
 
-        private void BroadcastInputFrame(int tick, List<(int playerId, sbyte dx, sbyte dy)> entries)
+        private void BroadcastInputFrame(int tick, List<(int playerId, byte angle, bool moving)> entries)
         {
             var writer = new NetDataWriter();
             writer.WriteInputFrame(tick, entries);
@@ -218,14 +246,14 @@ namespace FrameSyncDemo
 
         // ============ 客户端侧：应用一致的输入帧，推进模拟 ============
 
-        private void ApplyInputFrame(int tick, List<(int playerId, sbyte dx, sbyte dy)> entries)
+        private void ApplyInputFrame(int tick, List<(int playerId, byte angle, bool moving)> entries)
         {
             receivedFrames[tick] = entries;
 
             // 可能一次性收到多个连续 tick（比如刚连上时补发的），循环把能推进的都推进掉。
             while (receivedFrames.TryGetValue(localSimTick, out var frame))
             {
-                var inputsByPlayer = frame.ToDictionary(e => e.playerId, e => ((sbyte)e.dx, (sbyte)e.dy));
+                var inputsByPlayer = frame.ToDictionary(e => e.playerId, e => (e.angle, e.moving));
                 world.Step(inputsByPlayer);
 
                 long hash = world.ComputeStateHash();
@@ -255,6 +283,10 @@ namespace FrameSyncDemo
             if (!playerColors.TryGetValue(playerId, out var color))
                 color = GetPlayerColor(playerId);
             view.SetColor(color);
+
+            // 只有"这是我自己的角色"这一件事需要摄像机知道，别人的角色跟摄像机无关。
+            if (playerId == myPlayerId && cameraRig != null)
+                cameraRig.target = go.transform;
         }
 
         // ============ LiteNetLib 回调 ============
@@ -276,7 +308,7 @@ namespace FrameSyncDemo
             // 关键：不只是ID列表，要把已有玩家"此刻的坐标"一起发过去，
             // 这样新客户端才能接上现有状态，而不是把所有已有玩家初始化到(0,0)。
             var existingSnapshot = activePlayerIds
-                .Select(id => (id, world.Positions[id].X.Raw, world.Positions[id].Y.Raw, playerColors[id]))
+                .Select(id => (id, world.Positions[id].X.Raw, world.Positions[id].Y.Raw, world.Facings[id], playerColors[id]))
                 .ToList();
 
             // 简化处理：新玩家从"当前正在收集的 tick"开始参与要求，
@@ -330,10 +362,12 @@ namespace FrameSyncDemo
                         int pid = reader.GetInt();
                         long x = reader.GetLong();
                         long y = reader.GetLong();
+                        byte facing = reader.GetByte();
                         var color = new Color32(reader.GetByte(), reader.GetByte(), reader.GetByte(), reader.GetByte());
                         playerColors[pid] = color;
-                        // 用快照坐标初始化，而不是默认的 (0,0)。
+                        // 用快照坐标+朝向初始化，而不是默认的 (0,0) / 朝向0。
                         world.AddPlayer(pid, new FpVec2(Fp.FromRaw(x), Fp.FromRaw(y)));
+                        world.Facings[pid] = facing;
                         SpawnPlayerView(pid);
                     }
                     playerColors[myPlayerId] = GetPlayerColor(myPlayerId);
@@ -343,6 +377,7 @@ namespace FrameSyncDemo
                     localSimTick = startTick;
                     SetStatus($"Joined as Player {myPlayerId} at tick {startTick}");
                     CloseConnectionPanel();
+                    localLogicCamera?.SetCursorLocked(true);
                     break;
                 }
                 case NetMsgType.PlayerJoined:
@@ -370,10 +405,10 @@ namespace FrameSyncDemo
                 {
                     // 只有服务器会收到这个消息类型。
                     int tick = reader.GetInt();
-                    sbyte dx = reader.GetSByte();
-                    sbyte dy = reader.GetSByte();
+                    byte angle = reader.GetByte();
+                    bool moving = reader.GetBool();
                     int fromPlayerId = playerIdByPeer[peer];
-                    ServerReceiveInput(fromPlayerId, tick, dx, dy);
+                    ServerReceiveInput(fromPlayerId, tick, angle, moving);
                     break;
                 }
                 case NetMsgType.InputFrame:
@@ -381,13 +416,13 @@ namespace FrameSyncDemo
                     // 只有非 host 的纯客户端会走网络收到这个（host 走本地直调）。
                     int tick = reader.GetInt();
                     int count = reader.GetInt();
-                    var entries = new List<(int, sbyte, sbyte)>(count);
+                    var entries = new List<(int, byte, bool)>(count);
                     for (int i = 0; i < count; i++)
                     {
                         int pid = reader.GetInt();
-                        sbyte dx = reader.GetSByte();
-                        sbyte dy = reader.GetSByte();
-                        entries.Add((pid, dx, dy));
+                        byte angle = reader.GetByte();
+                        bool moving = reader.GetBool();
+                        entries.Add((pid, angle, moving));
                     }
                     ApplyInputFrame(tick, entries);
                     break;
