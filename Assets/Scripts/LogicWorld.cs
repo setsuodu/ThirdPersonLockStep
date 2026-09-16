@@ -23,12 +23,20 @@ namespace FrameSyncDemo
         // 保留最后一次移动方向（标准TPS行为），默认朝向 angleIndex=0。
         public readonly Dictionary<int, byte> Facings = new Dictionary<int, byte>();
 
+        // "上一个tick结束时"的快照，专门给表现层做插值用（解决tick频率<渲染帧率
+        // 导致的阶梯式跳变/抖动）。这两份数据本身不参与任何同步逻辑判定，纯粹是
+        // 渲染层的输入，所以放在这里而不是单独搞一份、还能保证生命周期和主状态一致。
+        public readonly Dictionary<int, FpVec2> PreviousPositions = new Dictionary<int, FpVec2>();
+        public readonly Dictionary<int, byte> PreviousFacings = new Dictionary<int, byte>();
+
         public void AddPlayer(int playerId, FpVec2? initialPosition = null)
         {
             if (!Positions.ContainsKey(playerId))
             {
                 Positions[playerId] = initialPosition ?? FpVec2.Zero;
                 Facings[playerId] = 0;
+                PreviousPositions[playerId] = Positions[playerId];
+                PreviousFacings[playerId] = 0;
             }
         }
 
@@ -36,15 +44,21 @@ namespace FrameSyncDemo
         {
             Positions.Remove(playerId);
             Facings.Remove(playerId);
+            PreviousPositions.Remove(playerId);
+            PreviousFacings.Remove(playerId);
         }
 
         /// <summary>
         /// 推进一个逻辑帧。inputsByPlayer 里没有的玩家，或 moving=false 的玩家，本帧不移动。
         /// 遍历顺序固定按 playerId 排序，避免字典遍历顺序在不同 runtime 下不确定。
         /// 方向通过 FpTrig 查表得到，天然是归一化的单位向量，不需要再对角线特判。
+        /// 开头先把"这一tick之前"的状态存进 Previous，供表现层插值。
         /// </summary>
         public void Step(Dictionary<int, (byte angle, bool moving)> inputsByPlayer)
         {
+            foreach (var kv in Positions) PreviousPositions[kv.Key] = kv.Value;
+            foreach (var kv in Facings) PreviousFacings[kv.Key] = kv.Value;
+
             foreach (var playerId in Positions.Keys.OrderBy(id => id).ToList())
             {
                 if (!inputsByPlayer.TryGetValue(playerId, out var input) || !input.moving)

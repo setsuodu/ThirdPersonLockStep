@@ -15,24 +15,17 @@ namespace FrameSyncDemo
             cachedRenderer = GetComponentInChildren<Renderer>();
         }
 
-        public void SetLogicPosition(FpVec2 logicPos)
-        {
-            transform.position = new Vector3(logicPos.X.ToFloatDebugOnly(), 0f, logicPos.Y.ToFloatDebugOnly());
-        }
-
-        [Tooltip("表现层的转向平滑速度，纯视觉，不影响任何同步逻辑")]
-        public float rotationSmoothSpeed = 12f;
-
         /// <summary>
-        /// angleIndex 是 LogicWorld.Facings 里同步好的朝向（所有客户端一致），
-        /// 这里只是把它转成 Unity 的 Y 轴角度并做平滑插值——平滑速度可以随便调，
-        /// 因为朝向本身已经在同步域里确定了，这里怎么转、多快转完全是纯表现问题。
+        /// position/yawDegrees 已经是 GameNetwork 在"上一tick"和"这一tick"之间
+        /// 按渲染时间插值算好的结果——这里不再自己做平滑/插值，只是原样应用。
+        /// 之所以插值放在 GameNetwork 而不是这里，是因为要让同一个 alpha 同时
+        /// 驱动位置和朝向，两者步调一致，看起来才不会显得脱节；如果各自在这里
+        /// 用不同的平滑参数分别处理，位置和朝向的"跟手感"会不一致。
         /// </summary>
-        public void SetLogicFacing(byte angleIndex)
+        public void SetRenderState(Vector3 position, float yawDegrees)
         {
-            float targetDeg = angleIndex * (360f / FpTrig.STEPS);
-            var targetRot = Quaternion.Euler(0f, targetDeg, 0f);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.deltaTime * rotationSmoothSpeed);
+            transform.position = position;
+            transform.rotation = Quaternion.Euler(0f, yawDegrees, 0f);
         }
 
         public void SetColor(Color color)

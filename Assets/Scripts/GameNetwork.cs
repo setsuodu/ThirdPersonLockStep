@@ -38,6 +38,10 @@ namespace FrameSyncDemo
         private float tickInterval;
         private float tickAccumulator;
 
+        // 距离"上一次世界真正推进了一个tick"过去了多久（渲染时间），用来算插值alpha。
+        // 每次 world.Step 被调用后归零；Update() 里持续累加。
+        private float timeSinceLastStep;
+
         private const string ConnectionKey = "framesync-demo";
         private const int DefaultPort = 9050;
 
@@ -90,13 +94,28 @@ namespace FrameSyncDemo
                 }
             }
 
-            // 表现层：把逻辑位置+朝向（定点/量化整数）转成 float 显示，单向流动，不回写。
+            timeSinceLastStep += Time.deltaTime;
+            // alpha=0 表示"刚推进完上一个tick"，alpha=1表示"马上要到下一个tick了"，
+            // 在这两个状态之间做插值，画面上就是连续滑动，而不是逻辑tick那种阶梯跳变。
+            float alpha = tickInterval > 0f ? Mathf.Clamp01(timeSinceLastStep / tickInterval) : 1f;
+
             foreach (var kv in playerViews)
             {
-                var pos = world.Positions.TryGetValue(kv.Key, out var p) ? p : FpVec2.Zero;
-                var facing = world.Facings.TryGetValue(kv.Key, out var f) ? f : (byte)0;
-                kv.Value.SetLogicPosition(pos);
-                kv.Value.SetLogicFacing(facing);
+                var currPos = world.Positions.TryGetValue(kv.Key, out var cp) ? cp : FpVec2.Zero;
+                var prevPos = world.PreviousPositions.TryGetValue(kv.Key, out var pp) ? pp : currPos;
+                var currFacing = world.Facings.TryGetValue(kv.Key, out var cf) ? cf : (byte)0;
+                var prevFacing = world.PreviousFacings.TryGetValue(kv.Key, out var pf) ? pf : currFacing;
+
+                // 只在这一步（渲染层的最后一环）才把定点数转成float，插值本身也只服务于显示。
+                Vector3 prevV = new Vector3(prevPos.X.ToFloatDebugOnly(), 0f, prevPos.Y.ToFloatDebugOnly());
+                Vector3 currV = new Vector3(currPos.X.ToFloatDebugOnly(), 0f, currPos.Y.ToFloatDebugOnly());
+                Vector3 renderPos = Vector3.Lerp(prevV, currV, alpha);
+
+                float prevDeg = prevFacing * (360f / FpTrig.STEPS);
+                float currDeg = currFacing * (360f / FpTrig.STEPS);
+                float yaw = Mathf.LerpAngle(prevDeg, currDeg, alpha); // LerpAngle正确处理360度环绕
+
+                kv.Value.SetRenderState(renderPos, yaw);
             }
         }
 
@@ -255,6 +274,7 @@ namespace FrameSyncDemo
             {
                 var inputsByPlayer = frame.ToDictionary(e => e.playerId, e => (e.angle, e.moving));
                 world.Step(inputsByPlayer);
+                timeSinceLastStep = 0f;
 
                 long hash = world.ComputeStateHash();
                 string posStr = string.Join(", ", world.Positions.OrderBy(p => p.Key)
@@ -368,6 +388,7 @@ namespace FrameSyncDemo
                         // 用快照坐标+朝向初始化，而不是默认的 (0,0) / 朝向0。
                         world.AddPlayer(pid, new FpVec2(Fp.FromRaw(x), Fp.FromRaw(y)));
                         world.Facings[pid] = facing;
+                        world.PreviousFacings[pid] = facing; // 避免进场瞬间有一次"从默认朝向转过去"的多余动画
                         SpawnPlayerView(pid);
                     }
                     playerColors[myPlayerId] = GetPlayerColor(myPlayerId);

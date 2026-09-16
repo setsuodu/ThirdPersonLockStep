@@ -871,7 +871,7 @@ MonoBehaviour:
   statusText: {fileID: 531828644}
   connectionPanel: {fileID: 808365657}
   playerViewPrefab: {fileID: 5829920296457334754, guid: 42d0020280659694e8324bd06cffdbaa, type: 3}
-  tickRate: 20
+  tickRate: 30
   moveSpeedUnitsPerSecond: 3
   localLogicCamera: {fileID: 440709366}
   cameraRig: {fileID: 337774002}
